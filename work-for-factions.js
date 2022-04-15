@@ -12,7 +12,7 @@ const argsSchema = [
     ['no-focus', false], // Disable doing work that requires focusing (crime), and forces study/faction/company work to be non-focused (even if it means incurring a penalty)
     ['no-studying', false], // Disable studying.
     ['pay-for-studies-threshold', 200000], // Only be willing to pay for our studies if we have this much money
-    ['training-stat-per-multi-threshold', 50], // Heuristic: Only bother training stats if our mult/exp_mult for that stat are more than 1 per this many (50) stat levels we need.
+    ['training-stat-per-multi-threshold', 100], // Heuristic: Only bother training stats if our mult*exp_mult for that stat are more than 1 per this many (50) stat levels we need.
     ['no-coding-contracts', false], // Disable purchasing coding contracts for reputation
     ['no-crime', false], // Disable doing crimes at all. (Also disabled with --no-focus)
     ['crime-focus', false], // Useful in crime-focused BNs when you want to focus on crime related factions
@@ -202,16 +202,6 @@ async function loadStartupData(ns) {
     // Find out if we're in a gang
     const gangInfo = await getNsDataThroughFile(ns, 'ns.gang.inGang() ? ns.gang.getGangInformation() : false', '/Temp/gang-stats.txt');
     playerGang = gangInfo ? gangInfo.faction : null;
-    if (playerGang) { // Log a one-time warning if the user has permanently lost access to now-gang faction unique augs due to being in a gang.
-        const otherGangAugs = [...new Set(allGangFactions.filter(g => g != playerGang).flatMap(f => dictFactionAugs[f]))];
-        const accessibleFactions = [...new Set(factions.filter(f => !allGangFactions.includes(f)).concat(playerInfo.factions))];
-        const accessibleAugs = [...new Set(accessibleFactions.flatMap(f => dictFactionAugs[f]))];
-        const missingAugs = otherGangAugs.filter(a => !accessibleAugs.includes(a));
-        if (missingAugs.length > 0)
-            log(ns, `WARNING: By joining the gang "${playerGang}", you have lost access to ${missingAugs.length} augmentations that were uniquely offered ` +
-                `by the other gang factions: ${missingAugs.map(a => `"${a}" (${allGangFactions.filter(g => dictFactionAugs[g].includes(a))[0]})`).join(", ")}. ` +
-                `The only way to get these augmentations now will be to graft them (visit Vitalife in New Tokyo)`, true, 'warning');
-    }
 }
 
 async function mainLoop(ns) {
@@ -238,9 +228,6 @@ async function mainLoop(ns) {
                 for (const factionName of desiredGangFactions)
                     await earnFactionInvite(ns, factionName);
             }
-            // Whether we're in a gang or will be soon, there's no point in working for any factions that will become gangs, since we will lose all rep with them
-            if (!options['get-invited-to-every-faction'])
-                skipFactions = skipFactions.concat(allGangFactions.filter(f => !skipFactions.includes(f)));
         }
     }
     // If bladeburner is currently active, but we do not yet have The Blade's Simulacrum decide, whether we pause working.        
@@ -312,8 +299,7 @@ async function mainLoop(ns) {
     if (scope <= 7 || breakToMainLoop()) return;
 
     // Strategy 8: Busy ourselves for a while longer, then loop to see if there anything more we can do for the above factions
-    let factionsWeCanWorkFor = joinedFactions.filter(f => !options.skip.includes(f) &&
-        !(playerGang ? allGangFactions : []).includes(f) && !cannotWorkForFactions.includes(f));
+    let factionsWeCanWorkFor = joinedFactions.filter(f => !options.skip.includes(f) && !cannotWorkForFactions.includes(f) && f != playerGang);
     let foundWork = false;
     if (factionsWeCanWorkFor.length > 0 && !options['crime-focus']) {
         // Do a little work for whatever faction has the most favor (e.g. to earn EXP and enable additional neuroflux purchases)
@@ -657,9 +643,8 @@ export async function workForSingleFaction(ns, factionName, forceUnlockDonations
         return ns.print(`We are not yet part of faction "${factionName}". Skipping working for faction...`);
     if (startingFavor >= repToDonate && !forceRep) // If we have already unlocked donations via favour - no need to grind for rep
         return ns.print(`Donations already unlocked for "${factionName}". You should buy access to augs. Skipping working for faction...`);
-    // Cannot work for gang factions. Detect if this is a gang faction!
-    if (playerGang && allGangFactions.includes(factionName))
-        return ns.print(`"${factionName}" is an active gang faction. Cannot work for gang factions...`);
+    if (playerGang == factionName) // Cannot work for your own gang faction.
+        return ns.print(`"${factionName}" is your gang faction. You can only earn rep in your gang via respect.`);
     if (forceUnlockDonations && mostExpensiveAugByFaction[factionName] < 0.2 * factionRepRequired) { // Special check to avoid pointless donation unlocking
         ns.print(`The last "${factionName}" aug is only ${mostExpensiveAugByFaction[factionName].toLocaleString()} rep, ` +
             `not worth grinding ${favorRepRequired.toLocaleString()} rep to unlock donations.`);
