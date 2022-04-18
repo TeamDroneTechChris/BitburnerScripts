@@ -275,7 +275,7 @@ export async function main(ns) {
             interval: 32000, name: "host-manager.js", requiredServer: "home",
             // Funky heuristic warning: I find that new players with fewer SF levels under their belt are obsessed with hack income from servers,
             // but established players end up finding auto-purchased hosts annoying - so now the % of money we spend shrinks as SF levels grow.
-            args: () => ['--reserve-percent', Math.max(0.9, 0.1 * Object.values(dictSourceFiles).reduce((t, v) => t + v, 0)), '--absolute-reserve', reservedMoney(ns), '--utilization-trigger', '0'],
+            args: () => ['--reserve-percent', Math.min(0.9, 0.1 * Object.values(dictSourceFiles).reduce((t, v) => t + v, 0)), '--absolute-reserve', reservedMoney(ns), '--utilization-trigger', '0'],
             shouldRun: () => {
                 if (!shouldImproveHacking()) return false; // Skip if hack income is not important in this BN or at this time               
                 let utilization = getTotalNetworkUtilization(); // Utilization-based heuristics for when we likely could use more RAM for hacking
@@ -434,7 +434,7 @@ async function tryRunTool(ns, tool) {
         if (tool.tail === true && runningOnServer) {
             log(ns, `Tailing Tool: ${tool.name} on server ${runningOnServer}` + (args.length > 0 ? ` with args ${JSON.stringify(args)}` : ''));
             ns.tail(tool.name, runningOnServer, ...args);
-            tool.tail = false; // Avoid popping open additional tail windows in the future
+            //tool.tail = false; // Avoid popping open additional tail windows in the future
         }
         return true;
     } else
@@ -725,9 +725,11 @@ async function doTargetingLoop(ns) {
                 continue;
             }
             let start = expectedErrorPhraseIndex + expectedDeletedHostPhrase.length;
-            let lineBreak = errorMessage.indexOf('<br>', start);
+            let lineBreak = errorMessage.indexOf('<br>', start); // Error strings can appear in different ways
+            if (lineBreak == -1) lineBreak = errorMessage.indexOf(' ', start); // Try to handle them all
+            if (lineBreak == -1) lineBreak = errorMessage.length; // To extract the name of the server deleted
             let deletedHostName = errorMessage.substring(start, lineBreak);
-            log(ns, 'INFO: The server "' + deletedHostName + '" appears to have been deleted. Removing it from our lists', false, 'info');
+            log(ns, 'INFO: The server "' + deletedHostName + '" appears to have been deleted. Removing it from our lists', true, 'info');
             removeServerByName(ns, deletedHostName);
         }
     } while (!runOnce);
@@ -1609,10 +1611,10 @@ function removeServerByName(ns, deletedHostName) {
     const removeByName = (hostname, list, listname) => {
         const toRemove = list.findIndex(s => s.name === hostname);
         if (toRemove === -1)
-            log(ns, `ERROR: Failed to find server by name ${hostname}.`, true, 'error');
+            log(ns, `ERROR: Failed to find server by name "${hostname}".`, true, 'error');
         else {
             list.splice(toRemove, 1);
-            log(ns, `${hostname} was found at index ${toRemove} of list ${listname} and removed leaving ${list.length} items.`);
+            log(ns, `"${hostname}" was found at index ${toRemove} of list ${listname} and removed leaving ${list.length} items.`);
         }
     }
     removeByName(deletedHostName, serverListByFreeRam, 'serverListByFreeRam');
