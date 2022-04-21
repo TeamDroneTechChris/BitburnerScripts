@@ -120,13 +120,22 @@ export async function main(ns) {
     if (options.skip.length > 0) ns.print(`--skip factions: ${options.skip.join(", ")}`);
     if (options['fast-crimes-only']) ns.print(`--fast-crimes-only`);
 
+    // Find out whether the user can use this script
+    dictSourceFiles = await getActiveSourceFiles(ns); // Find out what source files the user has unlocked
+    if (!(4 in dictSourceFiles))
+        return log(ns, "ERROR: You cannot automate working for factions until you have unlocked singularity access (SF4).", true, 'error');
+    else if (dictSourceFiles[4] < 3)
+        log(ns, `WARNING: Singularity functions are much more expensive with lower levels of SF4 (you have SF4.${dictSourceFiles[4]}). ` +
+            `You may encounter RAM issues with and have to wait until you have more RAM available to run this script successfully.`, false, 'warning');
+
     let loadingComplete = false; // In the event of suboptimal RAM conditions, keep trying to start until we succeed
     while (!loadingComplete) {
         try {
             await loadStartupData(ns);
             loadingComplete = true;
         } catch (err) {
-            log(ns, 'WARNING: work-for-factions.js caught an unhandled error while starting up. Trying again in 5 seconds...\n' + err, true, 'warning');
+            log(ns, 'WARNING: work-for-factions.js caught an unhandled error while starting up. Trying again in 5 seconds...\n' +
+                (typeof err === 'string' ? err : err.message || JSON.stringify(err)), false, 'warning');
             await ns.sleep(5000);
         }
     }
@@ -137,7 +146,8 @@ export async function main(ns) {
         try {
             await mainLoop(ns);
         } catch (err) {
-            log(ns, 'WARNING: work-for-factions.js caught an unhandled error in its main loop. Trying again in 5 seconds...\n' + err, true, 'warning');
+            log(ns, 'WARNING: work-for-factions.js caught an unhandled error in its main loop. Trying again in 5 seconds...\n' +
+                (typeof err === 'string' ? err : err.message || JSON.stringify(err)), false, 'warning');
             await ns.sleep(5000);
             scope--; // Cancel out work scope increasing on the next iteration.
         }
@@ -146,13 +156,6 @@ export async function main(ns) {
 }
 
 async function loadStartupData(ns) {
-    dictSourceFiles = await getActiveSourceFiles(ns); // Find out what source files the user has unlocked
-    if (!(4 in dictSourceFiles))
-        return log(ns, "ERROR: You cannot automate working for factions until you have unlocked singularity access (SF4).", true, 'error');
-    else if (dictSourceFiles[4] < 3)
-        log(ns, `WARNING: Singularity functions are much more expensive with lower levels of SF4 (you have SF4.${dictSourceFiles[4]}). ` +
-            `You may encounter RAM issues with and have to wait until you have more RAM available to run this script successfully.`, false, 'warning');
-
     repToDonate = 150 * ((await tryGetBitNodeMultipliers(ns))?.RepToDonateToFaction || 1);
     const playerInfo = await getPlayerInfo(ns);
     const allKnownFactions = factions.concat(playerInfo.factions.filter(f => !factions.includes(f)));
