@@ -12,8 +12,11 @@ const argsSchema = [
 	['on-completion-script', null], // Spawn this script when max-charges is reached
 	['on-completion-script-args', []], // Optional args to pass to the script when launched
 ];
-export function autocomplete(data, _) {
+export function autocomplete(data, args) {
 	data.flags(argsSchema);
+	const lastFlag = args.length > 1 ? args[args.length - 2] : null;
+	if (["--on-completion-script"].includes(lastFlag))
+		return data.scripts;
 	return [];
 }
 
@@ -71,7 +74,8 @@ export async function main(ns) {
 			return ns.tprint("INFO: We've appear to already have been previously kicked out of the casino.");
 		}
 		// Kill all other scripts if enabled (note, we assume that if the temp folder is empty, they're already killed and this is a reload)
-		await killAllOtherScripts(ns, !options['no-deleting-remote-files']);
+		if (options['kill-all-scripts'])
+			await killAllOtherScripts(ns, !options['no-deleting-remote-files']);
 		// Clear the temp folder on home (all transient scripts / outputs)
 		await waitForProcessToComplete(ns, ns.run(getFilePath('cleanup.js')));
 	}
