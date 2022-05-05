@@ -99,7 +99,7 @@ async function initialize(ns) {
                 log(ns, `Waiting to be in a gang. Will create the highest faction gang as soon as it is available...`);
                 loggedWaiting = true;
             }
-            await runCommand(ns, `${JSON.stringify(gangsByPower)}.forEach(g => ns.gang.createGang(g))`, '/Temp/gang-createGang.js');
+            await runCommand(ns, `ns.args.forEach(g => ns.gang.createGang(g))`, '/Temp/gang-createGang.js', [gangsByPower]);
         }
         catch (err) {
             log(ns, `WARNING: gangs.js Caught (and suppressed) an unexpected error while waiting to join a gang:\n` +
@@ -142,7 +142,7 @@ async function initialize(ns) {
     }
 
     // Initialize equipment information
-    const equipmentNames = await getNsDataThroughFile(ns, 'ns.gang.getEquipmentNames()', '/Temp/gang-equipment-names.txt');
+    const equipmentNames = await getNsDataThroughFile(ns, 'ns.gang.getEquipmentNames()', '/Temp/gang-getEquipmentNames.txt');
     const dictEquipmentTypes = await getGangInfoDict(ns, equipmentNames, 'getEquipmentType');
     const dictEquipmentCosts = await getGangInfoDict(ns, equipmentNames, 'getEquipmentCost');
     const dictEquipmentStats = await getGangInfoDict(ns, equipmentNames, 'getEquipmentStats');
@@ -154,10 +154,10 @@ async function initialize(ns) {
     })).sort((a, b) => a.cost - b.cost);
     //log(ns, JSON.stringify(equipments));
     // Initialize information about gang members and crimes
-    allTaskNames = await getNsDataThroughFile(ns, 'ns.gang.getTaskNames()', '/Temp/gang-task-names.txt')
+    allTaskNames = await getNsDataThroughFile(ns, 'ns.gang.getTaskNames()', '/Temp/gang-getTaskNames.txt')
     allTaskStats = await getGangInfoDict(ns, allTaskNames, 'getTaskStats');
     multGangSoftcap = (await tryGetBitNodeMultipliers(ns))?.GangSoftcap || 1;
-    myGangMembers = await getNsDataThroughFile(ns, 'ns.gang.getMemberNames()', '/Temp/gang-member-names.txt');
+    myGangMembers = await getNsDataThroughFile(ns, 'ns.gang.getMemberNames()', '/Temp/gang-getMemberNames.txt');
     const dictMembers = await getGangInfoDict(ns, myGangMembers, 'getMemberInformation');
     for (const member of Object.values(dictMembers)) // Initialize the current activity of each member
         assignedTasks[member.name] = (member.task && member.task !== "Unassigned") ? member.task : ("Train " + (isHackGang ? "Hacking" : "Combat"));
@@ -247,7 +247,8 @@ async function updateMemberActivities(ns, dictMemberInfo = null, forceTask = nul
     }
     if (workOrders.length == 0) return;
     // Set the activities in bulk using a ram-dodging script
-    if (await getNsDataThroughFile(ns, `${JSON.stringify(workOrders)}.reduce((success, m) => success && ns.gang.setMemberTask(m.name, m.task), true)`, '/Temp/gang-set-member-tasks.txt'))
+    if (await getNsDataThroughFile(ns, `JSON.parse(ns.args[0]).reduce((success, m) => success && ns.gang.setMemberTask(m.name, m.task), true)`,
+        '/Temp/gang-set-member-tasks.txt', [JSON.stringify(workOrders)]))
         log(ns, `INFO: Assigned ${workOrders.length}/${Object.keys(dictMembers).length} gang member tasks (${workOrders.map(o => o.task).filter((v, i, self) => self.indexOf(v) === i).join(", ")})`)
     else
         log(ns, `ERROR: Failed to set member task of one or more members: ` + JSON.stringify(workOrders), false, 'error');
@@ -268,7 +269,7 @@ async function optimizeGangCrime(ns, myGangInfo) {
     // Find out how much reputation we need, without SF4, we estimate gang faction rep based on current gang rep
     let factionRep = -1;
     if (ownedSourceFiles[4] > 0) {
-        try { factionRep = await getNsDataThroughFile(ns, `ns.getFactionRep('${myGangFaction}')`, `/Temp/gang-faction-rep.txt`); }
+        try { factionRep = await getNsDataThroughFile(ns, `ns.getFactionRep(ns.args[0])`, `/Temp/getFactionRep.txt`, [myGangFaction]); }
         catch { log(ns, 'INFO: Error suppressed. Falling back to estimating current gang faction rep.'); }
     }
     if (factionRep == -1) // Estimate current gang rep based on respect. Game gives 1/75 rep / respect. This is an underestimate, because it doesn't take into account spent/lost respect on ascend/recruit/death. 
@@ -368,7 +369,7 @@ async function doRecruitMember(ns) {
     let i = 0, newMemberName;
     do { newMemberName = `Thug ${++i}`; } while (myGangMembers.includes(newMemberName) || myGangMembers.includes(newMemberName + " Understudy"));
     if (i < myGangMembers.length) newMemberName += " Understudy"; // Pay our respects to the deceased
-    if (await getNsDataThroughFile(ns, `ns.gang.canRecruitMember() && ns.gang.recruitMember('${newMemberName}')`, '/Temp/gang-recruit-member.txt')) {
+    if (await getNsDataThroughFile(ns, `ns.gang.canRecruitMember() && ns.gang.recruitMember(ns.args[0])`, '/Temp/gang-recruit-member.txt', [newMemberName])) {
         myGangMembers.push(newMemberName);
         assignedTasks[newMemberName] = "Train " + (isHackGang ? "Hacking" : "Combat");
         lastMemberReset[newMemberName] = Date.now();
@@ -389,7 +390,7 @@ async function tryAscendMembers(ns) {
         const ascResult = dictAscensionResults[member];
         if (!ascResult || !importantStats.some(stat => ascResult[stat] >= ascMultiThreshold))
             continue;
-        if (undefined !== (await getNsDataThroughFile(ns, `ns.gang.ascendMember('${member}')`, '/Temp/gang-ascend-member.txt'))) {
+        if (undefined !== (await getNsDataThroughFile(ns, `ns.gang.ascendMember(ns.args[0])`, '/Temp/gang-ascend-member.txt', [member]))) {
             log(ns, `SUCCESS: Ascended member ${member} to increase multis by ${importantStats.map(s => `${s} -> ${ascResult[s].toFixed(2)}x`).join(", ")}`, false, 'success');
             lastMemberReset[member] = Date.now();
         }
@@ -441,8 +442,8 @@ async function doUpgradePurchases(ns, purchaseOrder) {
     if (purchaseOrder.length == 0) return;
     const totalCost = purchaseOrder.reduce((t, e) => t + e.cost, 0);
     const getOrderSummary = (items) => items.map(o => `${o.member} ${o.type}: "${o.equipmentName}"`).join(", ");
-    const orderOutcomes = await getNsDataThroughFile(ns, `${JSON.stringify(purchaseOrder)}.map(o => ` +
-        `ns.gang.purchaseEquipment(o.member, o.equipmentName))`, '/Temp/gang-upgrade-members.txt');
+    const orderOutcomes = await getNsDataThroughFile(ns, `JSON.parse(ns.args[0]).map(o => ns.gang.purchaseEquipment(o.member, o.equipmentName))`,
+        '/Temp/gang-upgrade-members.txt', [JSON.stringify(purchaseOrder)]);
     const succeeded = [], failed = [];
     for (let i = 0; i < orderOutcomes.length; i++)
         (orderOutcomes[i] ? succeeded : failed).push(purchaseOrder[i]);
@@ -494,13 +495,13 @@ async function enableOrDisableWarfare(ns, myGangInfo) {
             (!warfareFinished ? `Lowest win chance is ${(100 * lowestWinChance).toFixed(2)}% with ${lowestWinChanceGang} (power ${formatNumberShort(otherGangs[lowestWinChanceGang]?.power)}). ` +
                 `Average win chance ${(100 * averageWinChance).toFixed(2)}% across ${totalActiveGangs} active gangs.` :
                 'We have destroyed all other gangs and earned 100% territory'), false, warfareFinished ? 'info' : 'success');
-        await runCommand(ns, `ns.gang.setTerritoryWarfare(${shouldEngage})`, '/Temp/gang-set-warfare.js');
+        await runCommand(ns, `ns.gang.setTerritoryWarfare(ns.args[0])`, '/Temp/gang-set-warfare.js', [shouldEngage]);
     }
 }
 
 // Ram-dodging helper to get gang information for each item in a list
 const getGangInfoDict = async (ns, elements, gangFunction) => await getDict(ns, elements, `gang.${gangFunction}`, `/Temp/gang-${gangFunction}.txt`);
-const getDict = async (ns, elements, nsFunction, fileName) => await getNsDataThroughFile(ns, `Object.fromEntries(${JSON.stringify(elements)}.map(e => [e, ns.${nsFunction}(e)]))`, fileName);
+const getDict = async (ns, elements, nsFunction, fileName) => await getNsDataThroughFile(ns, `Object.fromEntries(ns.args.map(o => [o, ns.${nsFunction}(o)]))`, fileName, elements);
 
 /** Gang calcs shamefully stolen from https://github.com/danielyxie/bitburner/blob/dev/src/Gang/GangMember.ts **/
 let getStatWeight = (task, memberInfo) =>
