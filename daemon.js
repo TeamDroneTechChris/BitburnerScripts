@@ -92,7 +92,7 @@ let highUtilizationIterations = 0;
 let lastShareTime = 0; // Tracks when share was last invoked so we can respect the configured share-cooldown
 let allTargetsPrepped = false;
 
-/** @returns {Player} */
+/** @returns {Promise<Player>} */
 async function updatePlayerStats() { return playerStats = await getNsDataThroughFile(_ns, `ns.getPlayer()`, '/Temp/player-info.txt'); }
 
 function playerHackSkill() { return playerStats.hacking; }
@@ -182,6 +182,7 @@ export async function main(ns) {
         log(ns, `WARN: Detected ${competingDaemons.length} other '${scriptName}' instance is running at home (pids: ${daemonPids}) - shutting it down...`, true, 'warning')
         const killPid = await killProcessIds(ns, daemonPids);
         await waitForProcessToComplete_Custom(ns, getFnIsAliveViaNsPs(ns), killPid);
+        await ns.sleep(loopInterval); // The game can be slow to kill scripts, give it an extra bit of time.
     }
 
     _ns = ns;
@@ -238,16 +239,17 @@ export async function main(ns) {
 
     // These scripts are started once and expected to run forever (or terminate themselves when no longer needed)
     const openTailWindows = !options['no-tail-windows'];
+    const reqRam = (ram) => ns.getServerMaxRam("home") >= ram; // To avoid wasting precious RAM, many scripts don't launch unless we have more than a certain amount
     asynchronousHelpers = [
-        { name: "stats.js", shouldRun: () => ns.getServerMaxRam("home") >= 64 /* Don't waste precious RAM */ }, // Adds stats not usually in the HUD
-        { name: "stockmaster.js", args: openTailWindows ? ["--show-market-summary"] : [], tail: openTailWindows }, // Start our stockmaster
-        { name: "hacknet-upgrade-manager.js", args: ["-c", "--max-payoff-time", "1h"] }, // Kickstart hash income by buying everything with up to 1h payoff time immediately
-        { name: "spend-hacknet-hashes.js", args: [], shouldRun: () => 9 in dictSourceFiles }, // Always have this running to make sure hashes aren't wasted
+        { name: "stats.js", shouldRun: () => reqRam(64) }, // Adds stats not usually in the HUD
+        { name: "stockmaster.js", shouldRun: () => reqRam(64), args: openTailWindows ? ["--show-market-summary"] : [], tail: openTailWindows }, // Start our stockmaster
+        { name: "hacknet-upgrade-manager.js", shouldRun: () => reqRam(64), args: ["-c", "--max-payoff-time", "1h"] }, // Kickstart hash income by buying everything with up to 1h payoff time immediately
+        { name: "spend-hacknet-hashes.js", args: [], shouldRun: () => reqRam(64) && 9 in dictSourceFiles }, // Always have this running to make sure hashes aren't wasted
         { name: "sleeve.js", tail: openTailWindows, shouldRun: () => 10 in dictSourceFiles }, // Script to create manage our sleeves for us
-        { name: "gangs.js", tail: openTailWindows, shouldRun: () => 2 in dictSourceFiles }, // Script to create manage our gang for us
+        { name: "gangs.js", tail: openTailWindows, shouldRun: () => reqRam(64) && 2 in dictSourceFiles }, // Script to create manage our gang for us
         {
             name: "work-for-factions.js", args: ['--fast-crimes-only', '--no-coding-contracts'],  // Singularity script to manage how we use our "focus" work.
-            shouldRun: () => 4 in dictSourceFiles && (ns.getServerMaxRam("home") >= 128 / (2 ** dictSourceFiles[4])) // Higher SF4 levels result in lower RAM requirements
+            shouldRun: () => 4 in dictSourceFiles && reqRam(256 / (2 ** dictSourceFiles[4])) // Higher SF4 levels result in lower RAM requirements
         },
         { name: "bladeburner.js", tail: openTailWindows, shouldRun: () => 7 in dictSourceFiles && playerStats.bitNodeN == 6 || playerStats.bitNodeN == 7 }, // Script to create manage bladeburner for us
     ];
@@ -1729,8 +1731,8 @@ async function establishMultipliers(ns) {
 async function buildToolkit(ns) {
     log(ns, "buildToolkit");
     let allTools = hackTools.concat(asynchronousHelpers).concat(periodicScripts);
-    let toolCosts = await getNsDataThroughFile(ns, `Object.fromEntries(${JSON.stringify(allTools.map(t => t.name))}` +
-        `.map(s => [s, ns.getScriptRam(s, '${daemonHost}')]))`, '/Temp/script-costs.txt');
+    let toolCosts = await getNsDataThroughFile(ns, `Object.fromEntries(ns.args.map(s => [s, ns.getScriptRam(s, 'home')]))`,
+        '/Temp/script-costs.txt', allTools.map(t => t.name));
     for (const toolConfig of allTools) {
         let tool = {
             instance: ns,

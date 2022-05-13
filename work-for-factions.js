@@ -46,9 +46,10 @@ const preferredEarlyFactionOrder = [
     "Daedalus", // Once we have all faction_rep boosting augs, there's no reason not to work towards Daedalus as soon as it's available/feasible so we can buy Red Pill
     "CyberSec", /* Quick, and NightSec aug depends on an aug from here */ "NiteSec", "Tetrads", // Cha augs to speed up earning company promotions
     "Bachman & Associates", // Boost company/faction rep for future augs
+    "BitRunners", // Fast source of some unique hack augs
     "Fulcrum Secret Technologies", // Will be removed if hack level is too low to backdoor their server
     "ECorp", // More cmp_rep augs, and some strong hack ones as well
-    "BitRunners", "The Black Hand", // Fastest sources of hacking augs after the above companies
+    "The Black Hand", // Fastest sources of hacking augs after the above companies
     "The Dark Army", // Unique cmp_rep aug TODO: Can it sensibly be gotten before corps? Requires 300 all combat stats.
     "Clarke Incorporated", "OmniTek Incorporated", "NWO", // More hack augs from companies
     "Chongqing", // Unique Source of big 1.4x hack exp boost (Can only join if not in e.g. Aevum as well)
@@ -176,6 +177,16 @@ async function loadStartupData(ns) {
     shouldFocusAtWork = !options['no-focus'] && hasFocusPenaly; // Focus at work for the best rate of rep gain, unless focus activities are disabled via command line
     hasSimulacrum = installedAugmentations.includes("The Blade's Simulacrum");
 
+    // Find out if we're in a gang
+    const gangInfo = await getGangInfo(ns);
+    playerGang = gangInfo ? gangInfo.faction : null;
+    if (playerGang) { // Whatever augmentations the gang provides are so easy to get form them, might as well ignore any other factions that have them.
+        const gangAugs = dictFactionAugs[playerGang];
+        ns.print(`Your gang ${playerGang} provides easy access to ${gangAugs.length} augs. Ignoring these augs from the original factions that provide them.`);
+        for (const faction of allKnownFactions.filter(f => f != playerGang))
+            dictFactionAugs[faction] = dictFactionAugs[faction].filter(a => !gangAugs.includes(a));
+    }
+
     mostExpensiveAugByFaction = Object.fromEntries(allKnownFactions.map(f => [f,
         dictFactionAugs[f].filter(aug => !ownedAugmentations.includes(aug))
             .reduce((max, aug) => Math.max(max, dictAugRepReqs[aug]), -1)]));
@@ -202,13 +213,8 @@ async function loadStartupData(ns) {
         ns.print(`${softCompletedFactions.length} factions will initially be skipped (all desired augs purchased): ${softCompletedFactions.join(", ")}`);
 
     // TODO: If --prioritize-invites is set, we should have a preferred faction order that puts easiest-invites-to-earn at the front (e.g. all city factions)
-
     numJoinedFactions = playerInfo.factions.length;
     fulcrummHackReq = await getServerRequiredHackLevel(ns, "fulcrumassets");
-
-    // Find out if we're in a gang
-    const gangInfo = await getNsDataThroughFile(ns, 'ns.gang.inGang() ? ns.gang.getGangInformation() : false', '/Temp/gang-stats.txt');
-    playerGang = gangInfo ? gangInfo.faction : null;
 }
 
 /** @param {NS} ns */
@@ -234,7 +240,7 @@ async function mainLoop(ns) {
     // Get some information about gangs (if unlocked)
     if (2 in dictSourceFiles) {
         if (!playerGang) { // Check if we've joined a gang since our last iteration
-            const gangInfo = await getNsDataThroughFile(ns, 'ns.gang.inGang() ? ns.gang.getGangInformation() : false', '/Temp/gang-stats.txt');
+            const gangInfo = await getGangInfo(ns);
             playerGang = gangInfo ? gangInfo.faction : null;
             // If we've only just now joined a gang, we have to reload startup data, because the augs offered by our gang faction has now changed.
             if (playerGang) await loadStartupData(ns);
@@ -598,7 +604,7 @@ async function monitorStudies(ns, stat, requirement) {
 }
 
 /** @param {NS} ns */
-export async function waitForFactionInvite(ns, factionName, maxWaitTime = 20000) {
+export async function waitForFactionInvite(ns, factionName, maxWaitTime = 25000) {
     ns.print(`Waiting for invite from faction "${factionName}"...`);
     let waitTime = maxWaitTime;
     do {
@@ -629,44 +635,44 @@ export async function tryJoinFaction(ns, factionName) {
 }
 
 /** @param {NS} ns
- * @returns {Player} the result of ns.getPlayer() */
+ * @returns {Promise<Player>} the result of ns.getPlayer() */
 async function getPlayerInfo(ns) {
     return ns.getPlayer(); // Note: Decided that we call this frequently enough it is not worth ram-dodging
     // return await getNsDataThroughFile(ns, `ns.getPlayerInfo()`, '/Temp/player-info.txt');
 }
 
 /** @param {NS} ns
- *  @returns {string[]} List of new faction invites */
+ *  @returns {Promise<string[]>} List of new faction invites */
 async function checkFactionInvites(ns) {
     return await getNsDataThroughFile(ns, 'ns.checkFactionInvitations()', '/Temp/checkFactionInvitations.txt');
 }
 
 /** @param {NS} ns
- *  @returns {GangGenInfo|boolean} Gang informatin, if we're in a gang, or False */
+ *  @returns {Promise<GangGenInfo|boolean>} Gang information, if we're in a gang, or False */
 async function getGangInfo(ns) {
     return await getNsDataThroughFile(ns, 'ns.gang.inGang() ? ns.gang.getGangInformation() : false', '/Temp/gang-stats.txt')
 }
 
 /** @param {NS} ns 
- *  @returns {Number} Current reputation with the specified faction */
+ *  @returns {Promise<Number>} Current reputation with the specified faction */
 async function getFactionReputation(ns, factionName) {
     return await getNsDataThroughFile(ns, `ns.getFactionRep(ns.args[0])`, '/Temp/getFactionRep.txt', [factionName]);
 }
 
 /** @param {NS} ns
- *  @returns {Number} Current reputation with the specified company */
+ *  @returns {Promise<Number>} Current reputation with the specified company */
 async function getCompanyReputation(ns, companyName) {
     return await getNsDataThroughFile(ns, `ns.getCompanyRep(ns.args[0])`, '/Temp/getCompanyRep.txt', [companyName]);
 }
 
 /** @param {NS} ns
- *  @returns {Number} Current favour with the specified faction */
+ *  @returns {Promise<Number>} Current favour with the specified faction */
 async function getCurrentFactionFavour(ns, factionName) {
     return await getNsDataThroughFile(ns, `ns.getFactionFavor(ns.args[0])`, '/Temp/getFactionFavor.txt', [factionName]);
 }
 
 /** @param {NS} ns
- *  @returns {Number} The hacking level required for the specified server */
+ *  @returns {Promise<Number>} The hacking level required for the specified server */
 async function getServerRequiredHackLevel(ns, serverName) {
     return await getNsDataThroughFile(ns, `ns.getServerRequiredHackingLevel(ns.args[0])`, '/Temp/getServerRequiredHackingLevel.txt', [serverName]);
 }
@@ -806,6 +812,10 @@ async function detectBestFactionWork(ns, factionName) {
             bestRepRate = currentRepGainRate;
             bestWork = work;
         }
+    }
+    if (bestWork === undefined) {
+        mainLoopStart = 0; // Force break out of whatever work loop we're in to update info (maybe we formed a gang with the faction we were working for?)
+        throw Error(`The faction "${factionName}" does not support any of the known work types. Cannot work for this faction!`);
     }
     return bestWork;
 }
