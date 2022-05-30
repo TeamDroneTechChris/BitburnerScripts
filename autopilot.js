@@ -7,10 +7,11 @@ import {
 const persistentLog = "log.autopilot.txt";
 const factionManagerOutputFile = "/Temp/affordable-augs.txt"; // Temp file produced by faction manager with status information
 const casinoFlagFile = "/Temp/ran-casino.txt";
+const defaultBnOrder = [4.3, 1.3, 5.1, 9.2, 10.1, 2.1, 8.2, 10.3, 9.3, 11.3, 13.3, 5.3, 7.1, 6.3, 7.3, 2.3, 8.3, 3.3, 12.999];
 
 let options = null; // The options used at construction time
 const argsSchema = [ // The set of all command line arguments
-	['next-bn', 12], // If we destroy the current BN, the next BN to start
+	['next-bn', 0], // If we destroy the current BN, the next BN to start
 	['disable-auto-destroy-bn', false], // Set to true if you do not want to auto destroy this BN when done
 	['install-at-aug-count', 11], // Automatically install when we can afford this many new augmentations (with NF only counting as 1)
 	['install-at-aug-plus-nf-count', 14], // or... automatically install when we can afford this many augmentations including additional levels of Neuroflux
@@ -37,16 +38,17 @@ export function autocomplete(data, args) {
 }
 
 let playerInGang, rushGang; // Tells us whether we're should be trying to work towards getting into a gang
-let wdAvailable; // A flag indicating whether the BN is completable on this reset
+let wdHack; // If the WD server is available (i.e. TRP is installed), caches the required hack level
 let ranCasino; // Flag to indicate whether we've stolen 10b from the casino yet
 let reservedPurchase; // Flag to indicate whether we've reservedPurchase money and can still afford augmentations
 let reserveForDaedalus, daedalusUnavailable; // Flags to indicate that we should be keeping 100b cash on hand to earn an invite to Daedalus
 let lastScriptsCheck; // Last time we got a listing of all running scripts
 let killScripts; // A list of scripts flagged to be restarted due to changes in priority
-let dictOwnedSourceFiles, unlockedSFs, bitnodeMults; // Info for the current bitnode
+let dictOwnedSourceFiles, unlockedSFs, bitnodeMults, nextBn; // Info for the current bitnode
 let installedAugmentations, playerInstalledAugCount, stanekLaunched; // Info for the current ascend
 let daemonStartTime; // The time we personally launched daemon.
 let installCountdown; // Start of a countdown before we install augmentations.
+let bnCompletionSuppressed; // Flag if we've detected that we've won the BN, but are suppressing a restart
 
 /** @param {NS} ns **/
 export async function main(ns) {
@@ -55,6 +57,12 @@ export async function main(ns) {
 	options = runOptions; // We don't set the global "options" until we're sure this is the only running instance
 
 	log(ns, "INFO: Auto-pilot engaged...", true, 'info');
+	// The game does not allow boolean flags to be turned "off" via command line, only on. Since this gets saved, notify the user about how they can turn it off.
+	const flagsSet = ['disable-auto-destroy-bn', 'enable-bladeburner', 'disable-wait-for-4s', 'disable-rush-gangs'].filter(f => options[f]);
+	for (const flag of flagsSet)
+		log(ns, `WARNING: You have previously enabled the flag "--${flag}". Because of the way this script saves its run settings, the ` +
+			`only way to now turn this back off will be to manually edit or delete the file ${getFilePath(ns.getScriptName())}.config.txt`, true);
+
 	let startUpRan = false;
 	while (true) {
 		try {
@@ -67,7 +75,7 @@ export async function main(ns) {
 			log(ns, `WARNING: autopilot.js Caught (and suppressed) an unexpected error:\n` +
 				(typeof err === 'string' ? err : err.message || JSON.stringify(err)), false, 'warning');
 		}
-		await ns.asleep(options['interval']);
+		await ns.sleep(options['interval']);
 	}
 }
 
@@ -76,8 +84,9 @@ async function startUp(ns) {
 	await persistConfigChanges(ns);
 
 	// Reset global state
-	playerInGang = rushGang = ranCasino = reserveForDaedalus = daedalusUnavailable = stanekLaunched = false;
-	playerInstalledAugCount = wdAvailable = null;
+	playerInGang = rushGang = ranCasino = reserveForDaedalus = daedalusUnavailable =
+		bnCompletionSuppressed = stanekLaunched = false;
+	playerInstalledAugCount = wdHack = null;
 	installCountdown = daemonStartTime = lastScriptsCheck = reservedPurchase = 0;
 	installedAugmentations = killScripts = [];
 
@@ -99,6 +108,19 @@ async function startUp(ns) {
 	}
 	if (player.playtimeSinceLastBitnode < 60 * 1000) // Skip initialization if we've been in the bitnode for more than 1 minute
 		await initializeNewBitnode(ns, player);
+
+	// Decide what the next-up bitnode should be
+	const getSFLevel = bn => Number(bn + "." + ((dictOwnedSourceFiles[bn] || 0) + (player.bitNodeN == bn ? 1 : 0)));
+	const nextSfEarned = getSFLevel(player.bitNodeN);
+	const nextRecommendedSf = defaultBnOrder.find(v => v - Math.floor(v) > getSFLevel(Math.floor(v)) - Math.floor(v));
+	const nextRecommendedBn = Math.floor(nextRecommendedSf);
+	nextBn = options['next-bn'] || nextRecommendedBn;
+	log(ns, `INFO: After the current BN (${nextSfEarned}), the next recommended BN is ${nextRecommendedBn} until you have SF ${nextRecommendedSf}.` +
+		`\nYou are currently earning SF${nextSfEarned}, and you already own the following source files: ` +
+		Object.keys(dictOwnedSourceFiles).map(bn => `${bn}.${dictOwnedSourceFiles[bn]}`).join(", "));
+	if (nextBn != nextRecommendedBn)
+		log(ns, `WARN: The next recommended BN is ${nextRecommendedBn}, but the --next-bn parameter is set to override this with ${nextBn}.`, true, 'warning');
+
 	return true;
 }
 
@@ -143,7 +165,7 @@ async function mainLoop(ns) {
 async function checkOnDaedalusStatus(ns, player, stocksValue) {
 	// Logic below is for rushing a daedalus invite.
 	// We do not need to run if we've previously determined that Daedalus cannot be unlocked (insufficient augs), or if we've already got TRP
-	if (daedalusUnavailable || wdAvailable == true) return reserveForDaedalus = false;
+	if (daedalusUnavailable || (wdHack || 0) > 0) return reserveForDaedalus = false;
 	if (player.hacking < 2500) return reserveForDaedalus = false;
 	if (player.factions.includes("Daedalus")) {
 		if (reserveForDaedalus) {
@@ -175,21 +197,26 @@ async function checkOnDaedalusStatus(ns, player, stocksValue) {
  * @param {NS} ns 
  * @param {Player} player */
 async function checkIfBnIsComplete(ns, player) {
-	if (wdAvailable === false) return false;
-	const wdHack = await getNsDataThroughFile(ns,
-		'ns.scan("The-Cave").includes("w0r1d_d43m0n") ? ns.getServerRequiredHackingLevel("w0r1d_d43m0n"): -1',
-		'/Temp/wd-hackingLevel.txt');
-	if (wdHack == -1) return !(wdAvailable = false);
-	wdAvailable = true; // WD is available this bitnode. Are we ready to hack it yet?
-	if (player.hacking < wdHack)
-		return false; // We can't hack it yet, but soon!
-	const text = `BN ${player.bitNodeN}.${dictOwnedSourceFiles[player.bitNodeN] + 1} completed at ${formatDuration(player.playtimeSinceLastBitnode)}`;
+	if (bnCompletionSuppressed) return true;
+	if (wdHack === null) { // If we haven't checked yet, see if w0r1d_d43m0n (server) has been unlocked and get its required hack level
+		wdHack = await getNsDataThroughFile(ns, 'ns.scan("The-Cave").includes("w0r1d_d43m0n") ? ' +
+			'ns.getServerRequiredHackingLevel("w0r1d_d43m0n"): -1',
+			'/Temp/wd-hackingLevel.txt');
+		if (wdHack == -1) wdHack = Number.POSITIVE_INFINITY; // Cannot stringify infinity, so use -1 in transit
+	}
+	// Detect if a BN win condition has been met
+	let bnComplete = player.hacking >= wdHack;
+	if (!bnComplete && player.inBladeburner && (7 in unlockedSFs)) // Detect the BB win condition
+		bnComplete = await getNsDataThroughFile(ns,
+			`ns.bladeburner.getActionCountRemaining('blackop', 'Operation Daedalus') === 0`,
+			'/Temp/bladeburner-completed.txt');
+	if (!bnComplete) return false; // No win conditions met
+
+	const text = `BN ${player.bitNodeN}.${dictOwnedSourceFiles[player.bitNodeN] + 1} completed at ` +
+		`${formatDuration(player.playtimeSinceLastBitnode)} ` +
+		`(${(player.hacking >= wdHack ? `hack (${wdHack.toFixed(0)})` : 'bladeburner')} win condition)`;
 	await persist_log(ns, text);
 	log(ns, `SUCCESS: ${text}`, true, 'success');
-
-	// Clean out our temp folder and flags so we don't have any stale data when the next BN starts.
-	let pid = launchScriptHelper(ns, 'cleanup.js');
-	if (pid) await waitForProcessToComplete(ns, pid);
 
 	// Run the --on-completion-script if specified
 	if (options['on-completion-script']) {
@@ -197,19 +224,37 @@ async function checkIfBnIsComplete(ns, player) {
 		if (pid) await waitForProcessToComplete(ns, pid);
 	}
 
+	// Check if there is some reason not to automatically destroy this BN
+	if (player.bitNodeN == 10) { // Suggest the user doesn't reset until they buy all sleeves and max memory
+		const shouldHaveSleeveCount = Math.max(8, 6 + dictOwnedSourceFiles[10]);
+		const numSleeves = await getNsDataThroughFile(ns, `ns.sleeve.getNumSleeves()`, '/Temp/sleeve-count.txt');
+		if (numSleeves < shouldHaveSleeveCount) {
+			log(ns, `WARNING: Detected that you only have ${numSleeves} sleeves, but you could have ${shouldHaveSleeveCount}.` +
+				`\nTry not to leave BN10 before buying all you can from the faction "The Covenant", especially sleeve memory!` +
+				`\nNOTE: You can ONLY buy sleeves/memory from The Covenant in BN10, which is why it's important to do this before you leave.`);
+			return bnCompletionSuppressed = true;
+		}
+	}
 	if (options['disable-auto-destroy-bn']) {
 		log(ns, `--disable-auto-destroy-bn is set, you can manually exit the bitnode when ready.`, true);
-		return wdAvailable = false;
+		return bnCompletionSuppressed = true;
 	}
+
+	// Clean out our temp folder and flags so we don't have any stale data when the next BN starts.
+	let pid = launchScriptHelper(ns, 'cleanup.js');
+	if (pid) await waitForProcessToComplete(ns, pid);
+
 	// Use the new special singularity function to automate entering a new BN
 	pid = await runCommand(ns, `ns.singularity.destroyW0r1dD43m0n(ns.args[0], ns.args[1])`,
-		'/Temp/singularity-destroyW0r1dD43m0n.js', [options['next-bn'], ns.getScriptName()]);
+		'/Temp/singularity-destroyW0r1dD43m0n.js', [nextBn, ns.getScriptName()]);
 	if (pid) {
+		log(ns, `SUCCESS: Initiated process ${pid} to execute 'singularity.destroyW0r1dD43m0n' with args: [${nextBn}, ${ns.getScriptName()}]`, true, 'success')
 		await waitForProcessToComplete(ns, pid);
+		log(ns, `WARNING: Process is done running, why am I still here? Sleeping 10 seconds...`, true, 'error')
 		await ns.sleep(10000);
 	}
-	log(ns, `ERROR: Tried destroy the bitnode, but we're still here...`, true, 'ERROR')
-	return true;
+	await persist_log(ns, log(ns, `ERROR: Tried destroy the bitnode (pid=${pid}), but we're still here...`, true, 'error'));
+	//return bnCompletionSuppressed = true; // Don't suppress bn Completion, try again on our next loop.
 }
 
 /** Helper to get a list of all scripts running (on home)
@@ -294,19 +339,23 @@ async function checkOnRunningScripts(ns, player) {
 	const daemon = findScript('daemon.js');
 	// If player hacking level is about 8000, run in "start-tight" mode
 	const hackThreshold = options['high-hack-threshold'];
-	const daemonArgs = player.hacking < hackThreshold ? ["--stock-manipulation"] :
+	const daemonArgs = (player.hacking < hackThreshold || player.bitNodeN == 8) ? [] :
 		// Launch daemon in "looping" mode if we have sufficient hack level
-		["--looping-mode", "--recovery-thread-padding", 10, "--cycle-timing-delay", 2000, "--queue-delay", "10",
-			"--stock-manipulation-focus", "--silent-misfires", "--initial-max-targets", "63", "--no-share"];
+		["--looping-mode", "--cycle-timing-delay", 2000, "--queue-delay", "10", "--initial-max-targets", "63",
+			"--stock-manipulation-focus", "--silent-misfires", "--no-share",
+			// Use recovery thread padding sparingly until our hack level is significantly higher
+			"--recovery-thread-padding", 1.0 + (player.hacking - hackThreshold) / 1000.0];
 	daemonArgs.push('--disable-script', getFilePath('work-for-factions.js')); // We will run this ourselves with args of our choosing
+	// Hacking earns no money in BN8, so prioritize XP
+	if (player.bitNodeN == 8) daemonArgs.push("--xp-only");
 	// By default, don't join bladeburner, since it slows BN12 progression by requiring combat augs not used elsewhere
 	if (options['enable-bladeburner']) daemonArgs.push('--run-script', getFilePath('bladeburner.js'));
 	// If we have SF4, but not level 3, instruct daemon.js to reserve additional home RAM
 	if ((4 in unlockedSFs) && unlockedSFs[4] < 3)
 		daemonArgs.push('--reserved-ram', 32 * (unlockedSFs[4] == 2 ? 4 : 16));
 	// Launch or re-launch daemon with the desired arguments (only if it wouldn't get in the way of stanek charging)
-	if ((!daemon || player.hacking >= hackThreshold && !daemon.args.includes("--looping-mode")) && !stanekRunning) {
-		if (player.hacking >= hackThreshold)
+	if ((!daemon || player.hacking >= hackThreshold && !daemon.args.includes("--looping-mode") && !daemon.args.includes("--xp-only")) && !stanekRunning) {
+		if (player.hacking >= hackThreshold && !(player.bitNodeN == 8))
 			log(ns, `INFO: Hack level (${player.hacking}) is >= ${hackThreshold} (--high-hack-threshold): Starting daemon.js in high-performance hacking mode.`);
 		launchScriptHelper(ns, 'daemon.js', daemonArgs);
 		daemonStartTime = Date.now();
@@ -369,17 +418,20 @@ async function maybeDoCasino(ns, player) {
 		return ranCasino = true;
 	if (player.money > 10E9) // If we already have 10b, assume we ran and lost track, or just don't need the money
 		return ranCasino = true;
-	if (player.money < 210000)
+	if (player.money < 250000)
 		return; // We need at least 200K (and change) to run casino so we can travel to aevum
 
 	// Run casino.js (and expect ourself to get killed in the process)
 	// Make sure "work-for-factions.js" is dead first, lest it steal focus and break the casino script before it has a chance to kill all scripts.
 	await killScript(ns, 'work-for-factions.js');
+	// Kill any action, in case we are studying or working out, as it might steal focus or funds before we can bet it at the casino.
+	if (4 in unlockedSFs) // No big deal if we can't, casino.js has logic to find the stop button and click it.
+		await getNsDataThroughFile(ns, `ns.stopAction()`, '/Temp/stop-action.txt');
 
 	const pid = launchScriptHelper(ns, 'casino.js', ['--kill-all-scripts', true, '--on-completion-script', ns.getScriptName()]);
 	if (pid) {
 		await waitForProcessToComplete(ns, pid);
-		await ns.asleep(1000); // Give time for this script to be killed if the game is being restarted by casino.js
+		await ns.sleep(1000); // Give time for this script to be killed if the game is being restarted by casino.js
 		// If we didn't get killed, see if casino.js discovered it was already previously kicked out
 		if (ns.read(casinoFlagFile)) return ranCasino = true;
 		// Otherwise, something went wrong
@@ -461,8 +513,7 @@ async function maybeInstallAugmentations(ns, player) {
 
 	// Otherwise, we've got the money reserved, we can afford the augs, we should be confident to ascend
 	const resetLog = `Invoking ascend.js at ${formatDuration(player.playtimeSinceLastAug).padEnd(11)} since last aug to install: ${augSummary}`;
-	log(ns, `INFO: ${resetLog}`, true, 'info');
-	await persist_log(ns, resetLog);
+	await persist_log(ns, log(ns, resetLog, true, 'info'));
 
 	// Kick off ascend.js
 	let errLog;
@@ -472,13 +523,12 @@ async function maybeInstallAugmentations(ns, player) {
 	let pid = launchScriptHelper(ns, 'ascend.js', ascendArgs);
 	if (pid) {
 		await waitForProcessToComplete(ns, pid, true); // Wait for the script to shut down (Ascend should get killed as it does, since the BN will be rebooting)
-		await ns.asleep(1000); // If we've been scheduled to be killed, awaiting an NS function should trigger it?
+		await ns.sleep(1000); // If we've been scheduled to be killed, awaiting an NS function should trigger it?
 		errLog = `ERROR: ascend.js ran, but we're still here. Something must have gone wrong. Will try again later`;
-		log(ns, errLog, true, 'error');
 	} else
 		errLog = `ERROR: Failed to launch ascend.js (pid == 0). Will try again later`;
 	// If we got this far, something went wrong
-	await persist_log(ns, errLog);
+	await persist_log(ns, log(ns, errLog, true, 'error'));
 }
 
 /** Logic to detect if we are close to a milestone and should postpone installing augmentations until it is hit
@@ -543,7 +593,7 @@ function launchScriptHelper(ns, baseScriptName, args = [], convertFileName = tru
 	if (!pid)
 		log(ns, `ERROR: Failed to launch ${baseScriptName} with args: [${args.join(", ")}]`, true, 'error');
 	else
-		log(ns, `INFO: Launched ${baseScriptName} (pid: ${pid}) with args: [${args.join(", ")}]`, true, 'info');
+		log(ns, `INFO: Launched ${baseScriptName} (pid: ${pid}) with args: [${args.join(", ")}]`, true);
 	return pid;
 }
 
