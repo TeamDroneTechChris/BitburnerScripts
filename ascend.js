@@ -1,7 +1,6 @@
 import { log, getConfiguration, getFilePath, runCommand, waitForProcessToComplete, getNsDataThroughFile, getActiveSourceFiles } from './helpers.js'
 
 const argsSchema = [
-    ['prioritize-augmentations', false], // If set to true, will spend as much money as possible on augmentations before upgrading home RAM
     ['install-augmentations', false], // By default, augs will only be purchased. Set this flag to install (a.k.a reset)
     /* OR */['reset', false], // An alias for the above flag, does the same thing.
     ['allow-soft-reset', false], // If set to true, allows ascend.js to invoke a **soft** reset (installs no augs) when no augs are affordable. This is useful e.g. when ascending rapidly to grind hacknet hash upgrades.
@@ -9,7 +8,9 @@ const argsSchema = [
     // Spawn this script after installing augmentations (Note: Args not supported by the game)
     ['on-reset-script', null], // By default, will start with `stanek.js` if you have stanek's gift, otherwise `daemon.js`.
     ['ticks-to-wait-for-additional-purchases', 10], // Don't reset until we've gone this many game ticks without any new purchases being made (10 * 200ms (game tick time) ~= 2 seconds)
-    ['max-wait-time', 60000], // The maximum number of milliseconds we'll wait for external scripts to purchase whatever permanent upgrades they can before we ascend anyway.
+    ['max-wait-time', 60000], // The maximum number of milliseconds we'll wait for external scripts to purchase whatever permanent upgrades they can before we ascend anyway.    
+    ['prioritize-home-ram', false], // If set to true, will spend as much money as possible on upgrading home RAM before buying augmentations
+    /* Deprecated */['prioritize-augmentations', true], // (Legacy flag, now ignored - left for backwards compatibility)
 ];
 
 export function autocomplete(data, args) {
@@ -29,9 +30,9 @@ export async function main(ns) {
     if (!(4 in dictSourceFiles))
         return log(ns, "ERROR: You cannot automate installing augmentations until you have unlocked singularity access (SF4).", true, 'error');
     ns.disableLog('sleep');
+    if (options['prioritize-augmentations'])
+        log(ns, "INFO: The --prioritize-augmentations flag is deprecated, as this is now the default behaviour. Use --prioritize-home-ram to get back the old behaviour.")
 
-    // TODO: Additional sanity checks: Make sure it's a good time to reset
-    // - We should be able to install ~10 augs or so after maxing home ram purchases?
     const playerData = await getNsDataThroughFile(ns, 'ns.getPlayer()', '/Temp/player-info.txt');
 
     // Kill every script except this one, since it can interfere with out spending
@@ -69,9 +70,7 @@ export async function main(ns) {
         pid = ns.run(getFilePath('Tasks/ram-manager.js'), 1, '--reserve', '0', '--budget', '0.8');
         await waitForProcessToComplete(ns, pid, true); // Wait for the script to shut down, indicating it has bought all it can.
     };
-    if (!options['prioritize-augmentations']) await spendOnHomeRam();
-
-    // TODO: (SF13) If Stanek is unlocked, and we have not yet accepted Stanek's gift, now's our last chance to do it (before purchasing augs)
+    if (options['prioritize-home-ram']) await spendOnHomeRam();
 
     // STEP 3: Buy as many desired augmentations as possible
     log(ns, 'Purchasing augmentations...', true, 'info');
@@ -93,7 +92,7 @@ export async function main(ns) {
             `Specify --allow-soft-reset to proceed without any purchased augs.`, true, 'error');
 
     // STEP 2 (Deferred): Upgrade home RAM after purchasing augmentations if this option was set.
-    if (options['prioritize-augmentations']) await spendOnHomeRam();
+    if (!options['prioritize-home-ram']) await spendOnHomeRam();
 
     // STEP 4: Try to Buy 4S data / API if we haven't already and can afford it (although generally stockmaster.js would have bought these if it could)
     log(ns, 'Checking on Stock Market upgrades...', true, 'info');
@@ -129,7 +128,6 @@ export async function main(ns) {
     }
 
     // TODO: If in corporation, and buyback shares is available, buy as many as we can afford
-    // TODO: Anything to do for Bladeburner?
 
     // WAIT: For money to stop decreasing, so we know that external scripts have bought what they could.
     log(ns, 'Waiting for purchasing to stop...', true, 'info');
