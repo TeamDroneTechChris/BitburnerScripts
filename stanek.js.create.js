@@ -108,18 +108,18 @@ const layouts = [ // NOTE: Width appears to be always the same as, or one more t
 			{ "id": 103, "x": 0, "y": 4, "rotation": 2 }, // Booster
 			{ "id": 104, "x": 2, "y": 0, "rotation": 1 } // Booster
 		]
-	}, {
+	}, { // Special thanks to @Ansopedi (a.k.a. Zoëkeeper) for solving for this layout
 		"height": 6, "width": 7, "fragments": [
-			{ "id": 0, "x": 1, "y": 1, "rotation": 2 }, // Hacking Mult
-			{ "id": 1, "x": 1, "y": 3, "rotation": 2 }, // Hacking Mult
-			{ "id": 5, "x": 4, "y": 3, "rotation": 0 }, // Hacking Speed
-			{ "id": 6, "x": 2, "y": 0, "rotation": 0 }, // Hack power
-			{ "id": 7, "x": 1, "y": 4, "rotation": 0 }, // Grow power
-			{ "id": 20, "x": 0, "y": 2, "rotation": 3 }, // Hacknet Production
-			{ "id": 21, "x": 0, "y": 0, "rotation": 0 }, // Hacknet Cost Reduction
-			{ "id": 25, "x": 5, "y": 0, "rotation": 3 }, // Reputation
-			{ "id": 28, "x": 4, "y": 4, "rotation": 0 }, // Crime Money TODO: Find a way to swap this for a booster
-			{ "id": 105, "x": 3, "y": 1, "rotation": 2 }, // Booster
+			{ "id": 0, "x": 3, "y": 2, "rotation": 1 }, // Hacking Mult
+			{ "id": 1, "x": 1, "y": 3, "rotation": 0 }, // Hacking Mult
+			{ "id": 5, "x": 4, "y": 1, "rotation": 1 }, // Hacking Speed
+			{ "id": 6, "x": 0, "y": 0, "rotation": 0 }, // Hack power
+			{ "id": 7, "x": 4, "y": 0, "rotation": 2 }, // Grow power
+			{ "id": 20, "x": 6, "y": 2, "rotation": 1 }, // Hacknet Production
+			{ "id": 21, "x": 0, "y": 4, "rotation": 0 }, // Hacknet Cost Reduction
+			{ "id": 25, "x": 0, "y": 1, "rotation": 1 }, // Reputation
+			{ "id": 101, "x": 2, "y": 4, "rotation": 2 }, // Booster
+			{ "id": 102, "x": 1, "y": 1, "rotation": 0 }, // Booster
 		]
 	}, { // Note: Late BN12, as Stanek gets bigger, Bladeburner also becomes a faster win condition, so we start adding those stats
 		"height": 7, "width": 7, "fragments": [
@@ -154,7 +154,29 @@ const layouts = [ // NOTE: Width appears to be always the same as, or one more t
 	}
 ];
 
-// These alternative layouts are more "well-counded", favour fitting more stat pieces vs. boosting most important stats
+// Not used for anything, but captures our rough priorities when designing the above layouts
+const priorities = [
+	{ id: 25, weight: 13.0 }, /* Faction Rep */
+	{ id: 0, weight: 12.0 }, /* Hack Mult */
+	{ id: 1, weight: 11.0 }, /* Hack Mult */
+	// Generally prefer adding one of these stats over triple-boosting the above
+	{ id: 5, weight: 1.15 }, /* Hack Speed */
+	{ id: 20, weight: 1.14 }, /* Hacknet Prod */
+	{ id: 21, weight: 1.13 }, /* Hacknet Cost */
+	{ id: 6, weight: 1.12 }, /* Hack Power */
+	{ id: 7, weight: 1.11 }, /* Grow Power */
+	{ id: 30, weight: 1.10 }, /* Bladeburner */
+	{ id: 16, weight: 1.09 }, /* Agi */
+	{ id: 14, weight: 1.08 }, /* Dex */
+	// Generally prefer additional boost over the below
+	{ id: 28, weight: 0.99 }, /* Crime Money */
+	{ id: 18, weight: 0.98 }, /* Cha */
+	{ id: 10, weight: 0.97 }, /* Str */
+	{ id: 12, weight: 0.96 }, /* Def */
+	{ id: 28, weight: 0.95 }, /* Work Money */
+]
+
+// Not used, but these alternative layouts favour fitting more stat pieces vs. boosting most important stats, use if you please
 const alternativeLayouts = [
 	{
 		"height": 3, "width": 4, "fragments": [
