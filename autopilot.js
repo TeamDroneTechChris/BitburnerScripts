@@ -212,7 +212,7 @@ async function checkIfBnIsComplete(ns, player) {
 			'/Temp/bladeburner-completed.txt');
 	if (!bnComplete) return false; // No win conditions met
 
-	const text = `BN ${player.bitNodeN}.${dictOwnedSourceFiles[player.bitNodeN] + 1} completed at ` +
+	const text = `BN ${player.bitNodeN}.${(dictOwnedSourceFiles[player.bitNodeN] || 0) + 1} completed at ` +
 		`${formatDuration(player.playtimeSinceLastBitnode)} ` +
 		`(${(player.hacking >= wdHack ? `hack (${wdHack.toFixed(0)})` : 'bladeburner')} win condition)`;
 	await persist_log(ns, text);
@@ -226,7 +226,7 @@ async function checkIfBnIsComplete(ns, player) {
 
 	// Check if there is some reason not to automatically destroy this BN
 	if (player.bitNodeN == 10) { // Suggest the user doesn't reset until they buy all sleeves and max memory
-		const shouldHaveSleeveCount = Math.max(8, 6 + dictOwnedSourceFiles[10]);
+		const shouldHaveSleeveCount = Math.min(8, 6 + dictOwnedSourceFiles[10]);
 		const numSleeves = await getNsDataThroughFile(ns, `ns.sleeve.getNumSleeves()`, '/Temp/sleeve-count.txt');
 		if (numSleeves < shouldHaveSleeveCount) {
 			log(ns, `WARNING: Detected that you only have ${numSleeves} sleeves, but you could have ${shouldHaveSleeveCount}.` +
@@ -237,6 +237,11 @@ async function checkIfBnIsComplete(ns, player) {
 	}
 	if (options['disable-auto-destroy-bn']) {
 		log(ns, `--disable-auto-destroy-bn is set, you can manually exit the bitnode when ready.`, true);
+		return bnCompletionSuppressed = true;
+	}
+	if (!(4 in dictOwnedSourceFiles)) {
+		log(ns, `You do not own SF4, so you must manually exit the bitnode (` +
+			`${player.hacking >= wdHack ? "by hacking W0r1dD43m0n" : "on the bladeburner BlackOps tab"}).`, true);
 		return bnCompletionSuppressed = true;
 	}
 
