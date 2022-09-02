@@ -15,19 +15,22 @@ const argsSchema = [
     ['min-shock-recovery', 97], // Minimum shock recovery before attempting to train or do crime (Set to 100 to disable, 0 to recover fully)
     ['shock-recovery', 0.05], // Set to a number between 0 and 1 to devote that ratio of time to periodic shock recovery (until shock is at 0)
     ['crime', null], // If specified, sleeves will perform only this crime regardless of stats
-    ['homicide-chance-threshold', 0.45], // Sleeves will automatically start homicide once their chance of success exceeds this ratio
+    ['homicide-chance-threshold', 0.5], // Sleeves on crime will automatically start homicide once their chance of success exceeds this ratio
+    ['disable-gang-homicide-priority', false], // By default, sleeves will do homicide to farm Karma until we're in a gang. Set this flag to disable this priority.
     ['aug-budget', 0.1], // Spend up to this much of current cash on augs per tick (Default is high, because these are permanent for the rest of the BN)
     ['buy-cooldown', 60 * 1000], // Must wait this may milliseconds before buying more augs for a sleeve
     ['min-aug-batch', 20], // Must be able to afford at least this many augs before we pull the trigger (or fewer if buying all remaining augs)
     ['reserve', null], // Reserve this much cash before determining spending budgets (defaults to contents of reserve.txt if not specified)
-    ['disable-follow-player', false], // Set to true to disable having Sleeve 0 work for the same faction/company as the player to boost re
+    ['disable-follow-player', false], // Set to true to disable having Sleeve 0 work for the same faction/company as the player to boost reputation gain rates
     ['disable-training', false], // Set to true to disable having sleeves workout at the gym (costs money)
     ['train-to-strength', 105], // Sleeves will go to the gym until they reach this much Str
     ['train-to-defense', 105], // Sleeves will go to the gym until they reach this much Def
     ['train-to-dexterity', 70], // Sleeves will go to the gym until they reach this much Dex
     ['train-to-agility', 70], // Sleeves will go to the gym until they reach this much Agi
     ['training-reserve', null], // Defaults to global reserve.txt. Can be set to a negative number to allow debt. Sleeves will not train if money is below this amount.
+    ['training-cap-seconds', 2 * 60 * 60 /* 2 hours */], // Time since the start of the bitnode after which we will no longer attempt to train sleeves to their target "train-to" settings
     ['disable-spending-hashes-for-gym-upgrades', false], // Set to true to disable spending hashes on gym upgrades when training up sleeves.
+    ['enable-bladeburner-team-building', false], // Set to true to have one sleeve support the main sleeve, and another do recruitment. Otherwise, they will just do more "Infiltrate Synthoids"
 ];
 
 export function autocomplete(data, _) {
@@ -91,19 +94,37 @@ async function manageSleeveAugs(ns, i, budget) {
     return 0;
 }
 
+/** @param {NS} ns
+ * @returns {Promise<Player>} the result of ns.getPlayer() */
+async function getPlayerInfo(ns) {
+    return await getNsDataThroughFile(ns, `ns.getPlayer()`, '/Temp/player-info.txt');
+}
+
+/** @param {NS} ns
+ * @returns {Promise<{ type: "COMPANY"|"FACTION"|"CLASS"|"CRIME", cyclesWorked: number, crimeType: string, classType: string, location: string, companyName: string, factionName: string, factionWorkType: string }>} */
+async function getCurrentWorkInfo(ns) {
+    return (await getNsDataThroughFile(ns, 'ns.singularity.getCurrentWork()', '/Temp/getCurrentWork.txt')) ?? {};
+}
+
 /** @param {NS} ns 
  * Main loop that gathers data, checks on all sleeves, and manages them. */
 async function mainLoop(ns) {
     // Update info
     numSleeves = await getNsDataThroughFile(ns, `ns.sleeve.getNumSleeves()`, '/Temp/sleeve-count.txt');
-    const playerInfo = await getNsDataThroughFile(ns, 'ns.getPlayer()', '/Temp/player-info.txt');
-    if (!playerInGang) playerInGang = await getNsDataThroughFile(ns, 'ns.gang.inGang()', '/Temp/gang-inGang.txt');
+    const playerInfo = await getPlayerInfo(ns);
+    const workInfo = await getCurrentWorkInfo(ns);
+    if (!playerInGang) playerInGang = !(2 in ownedSourceFiles) ? false :
+        await getNsDataThroughFile(ns, 'ns.gang.inGang()', '/Temp/gang-inGang.txt');
     let globalReserve = Number(ns.read("reserve.txt") || 0);
     let budget = (playerInfo.money - (options['reserve'] || globalReserve)) * options['aug-budget'];
     // Estimate the cost of sleeves training over the next time interval to see if (ignoring income) we would drop below our reserve.
     const costByNextLoop = interval / 1000 * task.filter(t => t.startsWith("train")).length * 12000; // TODO: Training cost/sec seems to be a bug. Should be 1/5 this ($2400/sec)
-    let canTrain = !options['disable-training'] && (playerInfo.money - costByNextLoop) > (options['training-reserve'] ||
-        (promptedForTrainingBudget ? ns.read(trainingReserveFile) : undefined) || globalReserve);
+    let canTrain = !options['disable-training'] &&
+        // To avoid training forever when mults are crippling, stop training if we've been in the bitnode a certain amount of time
+        (options['training-cap-seconds'] * 1000 > playerInfo.playtimeSinceLastBitnode) &&
+        // Don't train if we have no money (unless player has given permission to train into debt)
+        (playerInfo.money - costByNextLoop) > (options['training-reserve'] ||
+            (promptedForTrainingBudget ? ns.read(trainingReserveFile) : undefined) || globalReserve);
     // If any sleeve is training at the gym, see if we can purchase a gym upgrade to help them
     if (canTrain && task.some(t => t?.startsWith("train")) && !options['disable-spending-hashes-for-gym-upgrades'])
         if (await getNsDataThroughFile(ns, 'ns.hacknet.spendHashes("Improve Gym Training")', '/Temp/spend-hashes-on-gym.txt'))
@@ -136,14 +157,14 @@ async function mainLoop(ns) {
         if (Date.now() - (lastReassignTime[i] || 0) < minTaskWorkTime) continue;
 
         // Decide what we think the sleeve should be doing for the next little while
-        let [designatedTask, command, args, statusUpdate] = await pickSleeveTask(ns, playerInfo, i, sleeve, canTrain);
+        let [designatedTask, command, args, statusUpdate] = await pickSleeveTask(ns, playerInfo, workInfo, i, sleeve, canTrain);
 
         // Start the clock, this sleeve should stick to this task for minTaskWorkTime
         lastReassignTime[i] = Date.now();
         // Set the sleeve's new task if it's not the same as what they're already doing.
         let assignSuccess = true;
         if (task[i] != designatedTask)
-            assignSuccess = await setSleeveTask(ns, playerInfo, i, designatedTask, command, args);
+            assignSuccess = await setSleeveTask(ns, i, designatedTask, command, args);
 
         // For certain tasks, log a periodic status update.
         if (assignSuccess && statusUpdate && (Date.now() - (lastStatusUpdateTime[i] ?? 0) > minTaskWorkTime)) {
@@ -157,8 +178,10 @@ async function mainLoop(ns) {
 /** Picks the best task for a sleeve, and returns the information to assign and give status updates for that task.
  * @param {NS} ns 
  * @param {Player} playerInfo
- * @param {SleeveSkills | SleeveInformation | SleeveTask} sleeve */
-async function pickSleeveTask(ns, playerInfo, i, sleeve, canTrain) {
+ * @param {{ type: "COMPANY"|"FACTION"|"CLASS"|"CRIME", cyclesWorked: number, crimeType: string, classType: string, location: string, companyName: string, factionName: string, factionWorkType: string }} workInfo
+ * @param {SleeveSkills | SleeveInformation | SleeveTask} sleeve 
+ * @returns {[string, string, any[], string]} a 4-tuple of task name, command, args, and status message */
+async function pickSleeveTask(ns, playerInfo, workInfo, i, sleeve, canTrain) {
     // Must synchronize first iif you haven't maxed memory on every sleeve.
     if (sleeve.sync < 100)
         return ["synchronize", `ns.sleeve.setToSynchronize(ns.args[0])`, [i], `syncing... ${sleeve.sync.toFixed(2)}%`];
@@ -182,27 +205,39 @@ async function pickSleeveTask(ns, playerInfo, i, sleeve, canTrain) {
         }
     }
     // If player is currently working for faction or company rep, sleeves 0 can help him out (Note: Only one sleeve can work for a faction)
-    if (i == 0 && !options['disable-follow-player'] && playerInfo.isWorking && playerInfo.workType == "Working for Faction") {
+    if (i == 0 && !options['disable-follow-player'] && workInfo.type == "FACTION") {
         // TODO: We should be able to borrow logic from work-for-factions.js to have more sleeves work for useful factions / companies
         // We'll cycle through work types until we find one that is supported. TODO: Auto-determine the most productive faction work to do.
-        const faction = playerInfo.currentWorkFactionName;
+        const faction = workInfo.factionName;
         const work = works[workByFaction[faction] || 0];
         return [`work for faction '${faction}' (${work})`, `ns.sleeve.setToFactionWork(ns.args[0], ns.args[1], ns.args[2])`, [i, faction, work],
         /*   */ `helping earn rep with faction ${faction} by doing ${work}.`];
     }
-    if (i == 0 && !options['disable-follow-player'] && playerInfo.isWorking && playerInfo.workType == "Working for Company") { // If player is currently working for a company rep, sleeves 0 shall help him out (only one sleeve can work for a company)
-        return [`work for company '${playerInfo.companyName}'`, `ns.sleeve.setToCompanyWork(ns.args[0], ns.args[1])`, [i, playerInfo.companyName],
-        /*   */ `helping earn rep with company ${playerInfo.companyName}.`];
+    if (i == 0 && !options['disable-follow-player'] && workInfo.type == "COMPANY") { // If player is currently working for a company rep, sleeves 0 shall help him out (only one sleeve can work for a company)
+        const companyName = workInfo.companyName;
+        return [`work for company '${companyName}'`, `ns.sleeve.setToCompanyWork(ns.args[0], ns.args[1])`, [i, companyName],
+        /*   */ `helping earn rep with company ${companyName}.`];
     }
+    // If gangs are available, prioritize homicide until we've got the requisite -54K karma to unlock them
+    if (!playerInGang && !options['disable-gang-homicide-priority'] && (2 in ownedSourceFiles) && ns.heart.break() > -54000)
+        return await crimeTask(ns, 'homicide', i, sleeve); // Ignore chance - even a failed homicide generates more Karma than every other crime
     // If the player is in bladeburner, and has already unlocked gangs with Karma, generate contracts and operations
-    if (playerInfo.inBladeburner && playerInGang) {
+    if (playerInfo.inBladeburner) {
         // Hack: Without paying much attention to what's happening in bladeburner, pre-assign a variety of tasks by sleeve index
-        const bbTasks = [/*0*/["Support main sleeve"], /*1*/["Take on contracts", "Retirement"],
-            /*2*/["Take on contracts", "Bounty Hunter"], /*3*/["Take on contracts", "Tracking"], /*4*/["Infiltrate synthoids"],
-            /*5*/["Diplomacy"], /*6*/["Field Analysis"], /*7*/["Recruitment"]];
-        let [action, contractName] = bladeburnerCityChaos > 50 ? ["Diplomacy"] : bbTasks[i];
+        const bbTasks = [
+            // Note: Sleeve 0 might still be used for faction work (unless --disable-follow-player is set), so don't assign them a 'unique' task
+            /*0*/options['enable-bladeburner-team-building'] ? ["Support main sleeve"] : ["Infiltrate synthoids"],
+            // Note: Each contract type can only be performed by one sleeve at a time (similar to working for factions)
+            /*1*/["Take on contracts", "Retirement"], /*2*/["Take on contracts", "Bounty Hunter"], /*3*/["Take on contracts", "Tracking"],
+            // Other bladeburner work can be duplicated, but tackling a variety is probably useful. Overrides occur below
+            /*4*/["Infiltrate synthoids"], /*5*/["Diplomacy"], /*6*/["Field analysis"],
+            /*7*/options['enable-bladeburner-team-building'] ? ["Recruitment"] : ["Infiltrate synthoids"]
+        ];
+        let [action, contractName] = bbTasks[i];
         // If the sleeve is performing an action with a chance of failure, fallback to another task
-        if (sleeve.location.includes("%") && !sleeve.location.includes("100%"))
+        // TODO: We've lost a way to detect sleeve chance, need to look for a new way
+        //if (sleeve.location.includes("%") && !sleeve.location.includes("100%"))
+        if (sleeve.hp.current != sleeve.hp.max) // Assume if HP is not at max, they have started failing this task
             bladeburnerTaskFailed[i] = Date.now(); // If not, don't re-attempt this assignment for a while
         // As current city chaos gets progressively bad, assign more and more sleeves to Diplomacy to help get it under control
         if (bladeburnerCityChaos > (10 - i) * 10) // Later sleeves are first to get assigned, sleeve 0 is last at 100 chaos.
@@ -214,23 +249,36 @@ async function pickSleeveTask(ns, playerInfo, i, sleeve, canTrain) {
         /*   */ `ns.sleeve.setToBladeburnerAction(ns.args[0], ns.args[1], ns.args[2])`, [i, action, contractName || ""],
         /*   */ `doing ${action}${contractName ? ` - ${contractName}` : ''} in Bladeburner.`];
     }
-    // Finally, do crime for Karma. Homicide has the rate gain, if we can manage a decent success rate.
+    // Finally, do crime for Karma. Pick the best crime based on success chances
     var crime = options.crime || (await calculateCrimeChance(ns, sleeve, "homicide")) >= options['homicide-chance-threshold'] ? 'homicide' : 'mug';
+    return await crimeTask(ns, crime, i, sleeve);
+}
+
+/** Helper to prepare the crime task, since it is used in two places
+ * @param {NS} ns 
+ * @param {SleeveSkills | SleeveInformation | SleeveTask} sleeve 
+ * @returns {[string, string, any[], string]} a 4-tuple of task name, command, args, and status message */
+async function crimeTask(ns, crime, i, sleeve) {
     return [`commit ${crime} `, `ns.sleeve.setToCommitCrime(ns.args[0], ns.args[1])`, [i, crime],
     /*   */ `committing ${crime} with chance ${((await calculateCrimeChance(ns, sleeve, crime)) * 100).toFixed(2)}% ` +
     /*   */ (options.crime || crime == "homicide" ? '' : // If auto-criming, user may be curious how close we are to switching to homicide 
-    /*   */     ` (Note: Homicide chance would be ${((await calculateCrimeChance(ns, sleeve, "homicide")) * 100).toFixed(2)}% `)];
+    /*   */     ` (Note: Homicide chance would be ${((await calculateCrimeChance(ns, sleeve, "homicide")) * 100).toFixed(2)}%)`)];
 }
+
 
 /** Sets a sleeve to its designated task, with some extra error handling logic for working for factions. 
  * @param {NS} ns 
- * @param {Player} playerInfo */
-async function setSleeveTask(ns, playerInfo, i, designatedTask, command, args) {
-    let strAction = `Set sleeve ${i} to ${designatedTask} `;
+ * @param {number} i - Sleeve number
+ * @param {string} designatedTask - string describing the designated task
+ * @param {string} command - dynamic command to initiate this work 
+ * @param {any[]} args - arguments consumed by the dynamic command
+ * */
+async function setSleeveTask(ns, i, designatedTask, command, args) {
+    let strAction = `Set sleeve ${i} to ${designatedTask}`;
     try { // Assigning a task can throw an error rather than simply returning false. We must suppress this
         if (await getNsDataThroughFile(ns, command, `/Temp/sleeve-${command.slice(10, command.indexOf("("))}.txt`, args)) {
             task[i] = designatedTask;
-            log(ns, `SUCCESS: ${strAction} `);
+            log(ns, `SUCCESS: ${strAction}`);
             return true;
         }
     } catch { }
@@ -238,17 +286,18 @@ async function setSleeveTask(ns, playerInfo, i, designatedTask, command, args) {
     lastReassignTime[i] = 0;
     // If working for a faction, it's possible he current work isn't supported, so try the next one.
     if (designatedTask.startsWith('work for faction')) {
-        const nextWorkIndex = (workByFaction[playerInfo.currentWorkFactionName] || 0) + 1;
+        const faction = args[1]; // Hack: Not obvious, but the second argument will be the faction name in this case.
+        let nextWorkIndex = (workByFaction[faction] || 0) + 1;
         if (nextWorkIndex >= works.length) {
             log(ns, `WARN: Failed to ${strAction}. None of the ${works.length} work types appear to be supported. Will loop back and try again.`, true, 'warning');
             nextWorkIndex = 0;
         } else
             log(ns, `INFO: Failed to ${strAction} - work type may not be supported. Trying the next work type (${works[nextWorkIndex]})`);
-        workByFaction[playerInfo.currentWorkFactionName] = nextWorkIndex;
+        workByFaction[faction] = nextWorkIndex;
     } else if (designatedTask.startsWith('Bladeburner')) { // Bladeburner action may be out of operations
         bladeburnerTaskFailed[i] = Date.now(); // There will be a cooldown before this task is assigned again.
     } else
-        log(ns, `ERROR: Failed to ${strAction} `, true, 'error');
+        log(ns, `ERROR: Failed to ${strAction}`, true, 'error');
     return false;
 }
 

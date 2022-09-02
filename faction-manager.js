@@ -127,7 +127,7 @@ export async function main(ns) {
     gangFaction = gangInfo ? gangInfo.faction : false;
     favorToDonate = await getNsDataThroughFile(ns, 'ns.getFavorToDonate()', '/Temp/favor-to-donate.txt');
     startingPlayerMoney = playerData.money;
-    stockValue = options['ignore-stocks'] ? 0 : await getStocksValue(ns, playerData);
+    stockValue = options['ignore-stocks'] ? 0 : await getStocksValue(ns);
     joinedFactions = ignorePlayerData ? [] : playerData.factions;
     log(ns, 'In factions: ' + joinedFactions);
     // Get owned augmentations (whether they've been installed or not). Ignore strNF because you can always buy more.
@@ -285,7 +285,7 @@ async function updateAugmentationData(ns, desiredAugs) {
         owned: simulatedOwnedAugmentations.includes(aug),
         reputation: dictAugRepReqs[aug],
         price: dictAugPrices[aug],
-        stats: dictAugStats[aug],
+        stats: Object.fromEntries(Object.entries(dictAugStats[aug]).filter(([k, v]) => v != 1)),
         prereqs: dictAugPrereqs[aug] || [],
         // The best augmentations either have no stats (special effect like no Focus penalty, or Red Pill), or stats in the 'stat-desired' command line options
         desired: desiredAugs.includes(aug) || Object.keys(dictAugStats[aug]).length == 0 ||
@@ -383,7 +383,7 @@ async function joinFactions(ns, forceJoinFactions) {
 }
 
 /** Compute how much money must be donated to the faction to afford an augmentation. Faction can be either a faction object, or faction name */
-let getReqDonationForRep = (rep, faction) => Math.ceil(1e6 * (Math.max(0, rep - (faction.name ? faction : factionData[faction]).reputation)) / (playerData.faction_rep_mult));
+let getReqDonationForRep = (rep, faction) => Math.ceil(1e6 * (Math.max(0, rep - (faction.name ? faction : factionData[faction]).reputation)) / (playerData.mults.faction_rep));
 let getReqDonationForAug = (aug, faction) => getReqDonationForRep(aug.reputation, faction || aug.getFromJoined());
 
 let getTotalCost = (augPurchaseOrder) => augPurchaseOrder.reduce((total, aug, i) => total + aug.price * augCountMult ** i, 0);
@@ -457,10 +457,11 @@ async function manageUnownedAugmentations(ns, ignoredAugs) {
     const legendTitle = 'Optimized Purchase Order Legend';
     outputRows.push(legendTitle, '-'.repeat(legendTitle.length), "✓  Can afford", "✗  Cannot afford", "$  Can donate for rep",
         `*  Desired aug/stats (${desiredStatsFilters.join(", ")})`, '-'.repeat(legendTitle.length));
+    const countAvailable = availableAugs?.length || 0; // Get a count of available augs (including NF) to determine whether to prepare a purchase order
     // Display available augs. We use the return value to "lock in" the new sort order. If enabled, subsequent tables are displayed if the filtered sort order changes.
     availableAugs = ignorePlayerData ? unavailableAugs : // Note: We omit NF from available augs here because as many as we can afford are added at the end.
         await manageFilteredSubset(ns, outputRows, 'Available', availableAugs.filter(aug => aug.name != strNF), true);
-    if (availableAugs?.length > 0) {
+    if (countAvailable > 0) {
         let augsWithRep = availableAugs.filter(aug => aug.canAfford() || (aug.canAffordWithDonation() && !options['disable-donations']));
         let desiredAugs = availableAugs.filter(aug => aug.desired);
         if (augsWithRep.length > desiredAugs.length) {
