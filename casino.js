@@ -58,6 +58,8 @@ export async function main(ns) {
 
 	// Find the button used to save the game
 	const btnSaveGame = await findRetry(ns, "//button[@aria-label = 'save game']");
+	if (!btnSaveGame)
+		return tailAndLog(ns, "ERROR: Sorry, couldn't find the Overview Save (💾) button. Is your \"Overview\" panel collapsed or modded?");
 	let inputWager, btnStartGame;
 
 	// Step 2: Try to navigate to the blackjack game until successful, in case something repeatedly steals focus
@@ -112,7 +114,7 @@ export async function main(ns) {
 						log(ns, "ERROR: It looks like something stole focus while we were trying to automate the casino. Trying again.");
 						continue; // Loop back to start and try again
 					}
-					await ns.write(ran_flag, true, "w"); // Write a flag other scripts can check for indicating we think we've been kicked out of the casino.
+					await ns.write(ran_flag, "True", "w"); // Write a flag other scripts can check for indicating we think we've been kicked out of the casino.
 					return log(ns, "INFO: We appear to already have been previously kicked out of the casino.", true);
 				}
 				// Step 2.5.2: Kill all other scripts if enabled (note, we assume that if the temp folder is empty, they're already killed and this is a reload)
@@ -212,7 +214,7 @@ async function killAllOtherScripts(ns, removeRemoteFiles) {
 /** @param {NS} ns 
  *  Run when we can no longer gamble at the casino (presumably because we've been kicked out) **/
 async function onCompletion(ns) {
-	await ns.write(ran_flag, true, "w"); // Write an file indicating we think we've been kicked out of the casino.
+	await ns.write(ran_flag, "True", "w"); // Write an file indicating we think we've been kicked out of the casino.
 	log(ns, "SUCCESS: We've been kicked out of the casino.", true);
 
 	// Run the completion script before shutting down    
