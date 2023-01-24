@@ -210,7 +210,7 @@ export async function main(ns) {
 
     // Ensure no other copies of this script are running (they share memory)
     const scriptName = ns.getScriptName();
-    const competingDaemons = processList(ns, "home").filter(s => s.filename == scriptName && JSON.stringify(s.args) != JSON.stringify(ns.args));
+    const competingDaemons = processList(ns, "home").filter(s => s.filename == scriptName && s.pid != ns.pid);
     if (competingDaemons.length > 0) { // We expect only 1, due to this logic, but just in case, generalize the code below to support multiple.
         const daemonPids = competingDaemons.map(p => p.pid);
         log(ns, `Info: Restarting another '${scriptName}' instance running on home (pid: ${daemonPids} args: ` +
@@ -280,9 +280,9 @@ export async function main(ns) {
             name: "work-for-factions.js", args: ['--fast-crimes-only', '--no-coding-contracts'],  // Singularity script to manage how we use our "focus" work.
             shouldRun: () => 4 in dictSourceFiles && reqRam(256 / (2 ** dictSourceFiles[4]) && !studying) // Higher SF4 levels result in lower RAM requirements
         },
-        {   // Script to create manage bladeburner for us
+        {   // Script to manage bladeburner for us. Run automatically if not disabled and bladeburner API is available
             name: "bladeburner.js", tail: openTailWindows,
-            shouldRun: () => 7 in dictSourceFiles && (_cachedPlayerInfo.inBladeburner || [6, 7].includes(playerBitnode))
+            shouldRun: () => !options['disable-script'].includes('bladeburner.js') && 7 in dictSourceFiles && playerBitnode != 8
         },
     ];
     asynchronousHelpers.forEach(helper => helper.name = getFilePath(helper.name));
@@ -374,26 +374,34 @@ async function kickstartHackXp(ns) {
                 const studyTime = options['initial-study-time'];
                 log(ns, `INFO: Studying for ${studyTime} seconds to kickstart hack XP and speed up initial cycle times. (set --initial-study-time 0 to disable this step.)`);
                 const money = ns.getServerMoneyAvailable("home")
-                if (money >= 200000) // If we can afford to travel, we're probably far enough along that it's worthwhile going to Volhaven where ZB university is.
-                    await getNsDataThroughFile(ns, `ns.singularity.travelToCity("Volhaven")`, '/Temp/travel-to-city.txt');
-                const playerInfo = await getPlayerInfo(); // Update player stats to be certain of our new location.
-                const university = playerInfo.city == "Sector-12" ? "Rothman University" : playerInfo.city == "Aevum" ? "Summit University" : playerInfo.city == "Volhaven" ? "ZB Institute of Technology" : null;
-                if (!university)
-                    log(ns, `INFO: Cannot study, because you are in city ${playerInfo.city} which has no known university, and you cannot afford to travel to another city.`);
-                else {
-                    const course = playerInfo.city == "Sector-12" ? "Study Computer Science" : "Algorithms"; // Assume if we are still in Sector-12 we are poor and should only take the free course
-                    await getNsDataThroughFile(ns, `ns.singularity.universityCourse(ns.args[0], ns.args[1], ns.args[2])`, '/Temp/study.txt', [university, course, false]);
-                    startedStudying = true;
-                    await ns.sleep(studyTime * 1000); // Wait for studies to affect Hack XP. This will often greatly reduce time-to-hack/grow/weaken, and avoid a slow first cycle
+                const { CityName, LocationName, UniversityClassType } = ns.enums
+                if (money >= 200000) { // If we can afford to travel, we're probably far enough along that it's worthwhile going to Volhaven where ZB university is.
+                    log(ns, `INFO: Travelling to Volhaven for best study XP gain rate.`);
+                    await getNsDataThroughFile(ns, `ns.singularity.travelToCity(ns.args[0])`, '/Temp/travel-to-city.txt', [CityName.Volhaven]);
                 }
-            } catch { log(ns, 'WARNING: Failed to study to kickstart hack XP', false, 'warning'); }
+                const playerInfo = await getPlayerInfo(ns); // Update player stats to be certain of our new location.
+                const university = playerInfo.city == CityName.Sector12 ? LocationName.Sector12RothmanUniversity :
+                    playerInfo.city == CityName.Aevum ? LocationName.AevumSummitUniversity :
+                        playerInfo.city == CityName.Volhaven ? LocationName.VolhavenZBInstituteOfTechnology : null;
+                if (!university)
+                    log(ns, `WARN: Cannot study, because you are in city ${playerInfo.city} which has no known university, and you cannot afford to travel to another city.`, false, 'warning');
+                else {
+                    const course = playerInfo.city == CityName.Sector12 ? UniversityClassType.computerScience : UniversityClassType.algorithms; // Assume if we are still in Sector-12 we are poor and should only take the free course
+                    log(ns, `INFO: Studying "${course}" at "${university}" because we are in city "${playerInfo.city}".`);
+                    startedStudying = await getNsDataThroughFile(ns, `ns.singularity.universityCourse(ns.args[0], ns.args[1], ns.args[2])`, '/Temp/study.txt', [university, course, false]);
+                    if (startedStudying)
+                        await ns.sleep(studyTime * 1000); // Wait for studies to affect Hack XP. This will often greatly reduce time-to-hack/grow/weaken, and avoid a slow first cycle
+                    else
+                        log(ns, `WARNING: Failed to study to kickstart hack XP: ns.singularity.universityCourse("${university}", "${course}", false) returned "false".`, false, 'warning');
+                }
+            } catch (err) { log(ns, `WARNING: Caught error while trying to study to kickstart hack XP: ${typeof err === 'string' ? err : err.message || JSON.stringify(err)}`, false, 'warning'); }
         }
         // Immediately attempt to root initially-accessible targets before attempting any XP cycles
         for (const server of getAllServers().filter(s => !s.hasRoot() && s.canCrack()))
             await doRoot(ns, server);
         // Before starting normal hacking, fire a couple hack XP-focused cycle using a chunk of free RAM to further boost RAM
         if (!xpOnly) {
-            let maxXpCycles = 10;
+            let maxXpCycles = 10000; // Avoid an infinite loop if something goes wrong
             const maxXpTime = options['initial-hack-xp-time'];
             const start = Date.now();
             const xpTarget = getBestXPFarmTarget();
@@ -408,6 +416,7 @@ async function kickstartHackXp(ns) {
                     await ns.sleep(cycleTime);
                 else
                     return log(ns, 'WARNING: Failed to schedule an XP cycle', false, 'warning');
+                log(ns, `INFO: Hacked ${xpTarget.name} for ${cycleTime.toFixed(1)}ms, (${Date.now() - start}ms total) of ${maxXpTime * 1000}ms`);
             }
         }
     } catch {
@@ -570,7 +579,7 @@ async function doTargetingLoop(ns) {
                             `Manip: ${shouldManipulateGrow[s.name] ? "grow" : shouldManipulateHack[s.name] ? "hack" : '(disabled)'}`))
                         .join('\n  ');
                     log(ns, targetsLog);
-                    await ns.write("/Temp/targets.txt", targetsLog, "w");
+                    ns.write("/Temp/targets.txt", targetsLog, "w");
                 }
             }
             // Processed servers will be split into various lists for generating a summary at the end
@@ -785,18 +794,13 @@ async function doTargetingLoop(ns) {
             // Note netscript errors are raised as a simple string (no message property)
             var errorMessage = typeof err === 'string' ? err : err.message || JSON.stringify(err);
             // Catch errors that appear to be caused by deleted servers, and remove the server from our lists.
-            const expectedDeletedHostPhrase = "Invalid hostname: ";
-            let expectedErrorPhraseIndex = errorMessage.indexOf(expectedDeletedHostPhrase);
-            if (expectedErrorPhraseIndex == -1) {
+            const expectedDeletedHostErr = /Invalid hostname: (['"])([\w-]*)\1/.exec(errorMessage);
+            if (!expectedDeletedHostErr) {
                 if (err?.stack) errorMessage += '\n' + err.stack;
                 log(ns, `WARNING: daemon.js Caught an error in the targeting loop: ${errorMessage}`, true, 'warning');
                 continue;
             }
-            let start = expectedErrorPhraseIndex + expectedDeletedHostPhrase.length;
-            let lineBreak = errorMessage.indexOf('<br>', start); // Error strings can appear in different ways
-            if (lineBreak == -1) lineBreak = errorMessage.indexOf(' ', start); // Try to handle them all
-            if (lineBreak == -1) lineBreak = errorMessage.length; // To extract the name of the server deleted
-            let deletedHostName = errorMessage.substring(start, lineBreak).replaceAll("'", "").replaceAll('"', '');
+            let deletedHostName = expectedDeletedHostErr[2];
             log(ns, 'INFO: The server "' + deletedHostName + '" appears to have been deleted. Removing it from our lists', true, 'info');
             removeServerByName(ns, deletedHostName);
         }
